@@ -18,9 +18,14 @@ RUN pip install --no-cache-dir -r requirements.txt \
     && rm -rf /var/lib/apt/lists/*
 
 COPY app ./app
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
-RUN useradd -m -u 1000 appuser && mkdir -p /data && chown -R appuser /data /ms-playwright
-USER appuser
+# Tidak memakai `USER appuser`: entrypoint yang menurunkan hak akses setelah memperbaiki /data
+RUN useradd -m -u 1000 appuser \
+    && mkdir -p /data \
+    && chown -R appuser /data /ms-playwright \
+    && chmod +x /usr/local/bin/docker-entrypoint.sh
 
 EXPOSE 8000
+ENTRYPOINT ["docker-entrypoint.sh"]
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--proxy-headers", "--forwarded-allow-ips", "*"]
