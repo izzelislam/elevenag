@@ -4,7 +4,7 @@ from fastapi import APIRouter, HTTPException, Query, status
 from playwright.async_api import Error as PWError
 from playwright.async_api import TimeoutError as PWTimeout
 
-from ..browser import browser_manager
+from ..browser import EgressError, browser_manager
 from ..elevenlabs import client as el
 from ..schemas import Credits, VoiceList
 from ..services import load_session, mark_status, save_credits
@@ -42,6 +42,8 @@ async def egress():
     `ip` harus IP Cloudflare dan `warp` bernilai "on" (bukan IP VPS)."""
     try:
         return await browser_manager.probe_egress()
+    except EgressError as e:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(e))
     except PWError as e:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"gagal mengecek IP keluar: {e.message[:300]}")
 

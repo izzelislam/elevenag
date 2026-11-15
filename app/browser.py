@@ -2,12 +2,14 @@ import asyncio
 import logging
 import re
 import time
+from urllib.parse import urlparse
 from collections import defaultdict
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import AsyncIterator
 
 from playwright.async_api import Browser, BrowserContext, Playwright, async_playwright
+from playwright.async_api import Error as PWError
 
 from .config import settings
 from .elevenlabs.selectors import BASE_URL
@@ -18,6 +20,10 @@ log = logging.getLogger(__name__)
 
 SEED_URL = f"{BASE_URL}/__elevenag_seed"
 TRACE_URL = "https://www.cloudflare.com/cdn-cgi/trace"
+
+
+class EgressError(Exception):
+    """Pengecekan IP keluar gagal; pesannya sudah menjelaskan penyebab."""
 
 
 def _mask_proxy(url: str) -> str:
@@ -196,15 +202,45 @@ class BrowserManager:
                     except Exception:
                         log.exception("gagal menyimpan session terbaru untuk session %s", session_id)
 
+    @staticmethod
+    async def _check_proxy_reachable() -> None:
+        """Tes TCP cepat ke proxy supaya penyebab kegagalan jelas (firewall vs proxy mati)."""
+        u = urlparse(settings.proxy_url)
+        host, port = u.hostname, u.port or (1080 if u.scheme.startswith("socks") else 8080)
+        try:
+            _, writer = await asyncio.wait_for(asyncio.open_connection(host, port), timeout=4)
+        except asyncio.TimeoutError:
+            raise EgressError(
+                f"proxy {host}:{port} tidak merespons dalam 4 detik. Biasanya firewall (UFW) menjatuhkan "
+                f"koneksi dari container: izinkan subnet Docker ke port {port} di host."
+            ) from None
+        except OSError as e:
+            raise EgressError(
+                f"tidak bisa konek ke proxy {host}:{port} ({e.strerror or e}). "
+                "Jembatan (socat) belum jalan atau alamat/port di PROXY_URL salah."
+            ) from None
+        writer.close()
+
     async def probe_egress(self) -> dict:
         """IP keluar yang dilihat dunia luar lewat browser yang sama (termasuk proxy-nya).
         Memakai cdn-cgi/trace milik Cloudflare: `warp=on` kalau keluar lewat WARP."""
+        if settings.proxy_url:
+            await self._check_proxy_reachable()
         async with self._sem:
             browser = await self._ensure_browser()
             ctx = await browser.new_context()
             try:
                 resp = await ctx.request.get(TRACE_URL, timeout=20_000)
                 text = await resp.text()
+            except PWError as e:
+                if settings.proxy_url:
+                    raise EgressError(
+                        "proxy terjangkau, tapi tidak ada jawaban dari internet lewat proxy itu. "
+                        "Cek di host: `warp-cli status` harus Connected, dan "
+                        "`curl --socks5 127.0.0.1:40000 https://www.cloudflare.com/cdn-cgi/trace` harus berhasil. "
+                        f"({e.message.splitlines()[0][:120]})"
+                    ) from None
+                raise
             finally:
                 await ctx.close()
         info = dict(line.split("=", 1) for line in text.splitlines() if "=" in line)
