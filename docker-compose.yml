@@ -16,3 +16,13 @@ services:
       - "host.docker.internal:host-gateway"
     shm_size: "1gb"
     restart: unless-stopped
+
+# Subnet dikunci supaya alamat gateway (host dilihat dari container) selalu sama.
+# Dipakai untuk jembatan ke proxy WARP di host: PROXY_URL=socks5://172.30.0.1:40001
+# Ganti lewat DOCKER_SUBNET / DOCKER_GATEWAY di .env kalau bentrok dengan jaringan lain.
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: ${DOCKER_SUBNET:-172.30.0.0/24}
+          gateway: ${DOCKER_GATEWAY:-172.30.0.1}

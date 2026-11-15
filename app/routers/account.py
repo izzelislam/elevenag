@@ -36,6 +36,16 @@ async def _run(session_id: int | None, fn):
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"browser error: {e.message[:300]}")
 
 
+@router.get("/egress")
+async def egress():
+    """IP keluar yang terlihat oleh ElevenLabs. Kalau PROXY_URL diisi (mis. Cloudflare WARP),
+    `ip` harus IP Cloudflare dan `warp` bernilai "on" (bukan IP VPS)."""
+    try:
+        return await browser_manager.probe_egress()
+    except PWError as e:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"gagal mengecek IP keluar: {e.message[:300]}")
+
+
 @router.get("/credits", response_model=Credits)
 async def get_credits(session_id: int | None = None):
     """Cek sisa & pemakaian credit secara live (juga memperbarui data di DB)."""

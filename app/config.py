@@ -17,6 +17,10 @@ class Settings(BaseSettings):
     data_dir: Path = Path("./data")
 
     headless: bool = True
+    # Proxy untuk SEMUA trafik keluar ke ElevenLabs (browser + panggilan API langsung).
+    # Contoh Cloudflare WARP (mode proxy): socks5://127.0.0.1:40000
+    # Kosong = langsung dari IP server.
+    proxy_url: str = ""
     # Maksimal context browser yang jalan paralel (tiap context ~150-300MB RAM)
     max_concurrency: int = 2
     nav_timeout_ms: int = 30_000

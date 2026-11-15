@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import re
 import time
 from collections import defaultdict
 from contextlib import asynccontextmanager
@@ -16,6 +17,12 @@ from .storage_js import DUMP_FN, SEED_FN, has_firebase_auth, session_seed_script
 log = logging.getLogger(__name__)
 
 SEED_URL = f"{BASE_URL}/__elevenag_seed"
+TRACE_URL = "https://www.cloudflare.com/cdn-cgi/trace"
+
+
+def _mask_proxy(url: str) -> str:
+    """Sembunyikan user:password kalau ada di URL proxy (untuk log)."""
+    return re.sub(r"//[^@/]*@", "//***@", url) if url else url
 
 
 @dataclass
@@ -51,10 +58,15 @@ class BrowserManager:
                 return self._browser
             if not self._pw:
                 self._pw = await async_playwright().start()
-            log.info("launching chromium (headless=%s)", settings.headless)
+            log.info(
+                "launching chromium (headless=%s, proxy=%s)",
+                settings.headless,
+                _mask_proxy(settings.proxy_url) or "tidak ada",
+            )
             self._browser = await self._pw.chromium.launch(
                 headless=settings.headless,
                 args=["--disable-blink-features=AutomationControlled", "--disable-dev-shm-usage"],
+                proxy={"server": settings.proxy_url} if settings.proxy_url else None,
             )
             self._contexts.clear()  # context lama ikut mati bersama browser lama
             if not self._reaper or self._reaper.done():
@@ -183,6 +195,27 @@ class BrowserManager:
                                 save_storage(session_id, dumped)
                     except Exception:
                         log.exception("gagal menyimpan session terbaru untuk session %s", session_id)
+
+    async def probe_egress(self) -> dict:
+        """IP keluar yang dilihat dunia luar lewat browser yang sama (termasuk proxy-nya).
+        Memakai cdn-cgi/trace milik Cloudflare: `warp=on` kalau keluar lewat WARP."""
+        async with self._sem:
+            browser = await self._ensure_browser()
+            ctx = await browser.new_context()
+            try:
+                resp = await ctx.request.get(TRACE_URL, timeout=20_000)
+                text = await resp.text()
+            finally:
+                await ctx.close()
+        info = dict(line.split("=", 1) for line in text.splitlines() if "=" in line)
+        return {
+            "ip": info.get("ip"),
+            "country": info.get("loc"),
+            "colo": info.get("colo"),
+            "warp": info.get("warp"),
+            "gateway": info.get("gateway"),
+            "proxy": _mask_proxy(settings.proxy_url) or None,
+        }
 
     @staticmethod
     async def _run_on_origin(ctx: BrowserContext, fn: str, arg=None):
