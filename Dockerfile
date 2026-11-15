@@ -6,6 +6,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+# libatomic1 dibutuhkan node bawaan Playwright; di image slim tidak ada, jadi
+# `playwright install` gagal (exit 127) sebelum sempat memasang dependensi browser.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libatomic1 ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt \
     && playwright install --with-deps chromium \
