@@ -10,7 +10,7 @@ from .config import settings
 from .db import SessionLocal
 from .elevenlabs import client as el
 from .models import BrowserSession, Job, utcnow
-from .services import mark_status
+from .services import mark_exhausted, mark_status, usable_sessions
 
 log = logging.getLogger(__name__)
 
@@ -59,13 +59,17 @@ def _finish(job_id: str, **values) -> None:
 async def _run(job_id: str) -> None:
     with SessionLocal() as db:
         job = db.get(Job, job_id)
-        sess = db.get(BrowserSession, job.session_id) if job and job.session_id else None
-        if not job or not sess:
-            if job:
-                job.status, job.error, job.finished_at = "failed", "session tidak ditemukan", utcnow()
-                db.commit()
+        if not job:
             return
-        sid, cookies, ua, storage = sess.id, sess.cookies, sess.user_agent, sess.storage
+        pinned = bool(job.session_pinned)
+        if pinned:
+            ids = [job.session_id] if job.session_id else []
+        else:
+            ids = [u.id for u in usable_sessions(db)]
+            # session yang dipilih saat POST /tts tetap diprioritaskan kalau masih usable
+            if job.session_id in ids:
+                ids.remove(job.session_id)
+                ids.insert(0, job.session_id)
         text, voice_id, model_id = job.text, job.voice_id, job.model_id or settings.default_model_id
         # kalau user cuma kirim voice_id, kolom voice berisi id itu juga -> bukan nama
         voice = job.voice if job.voice != job.voice_id else None
@@ -75,35 +79,64 @@ async def _run(job_id: str) -> None:
             "text_focus": False,
         }
 
-    try:
-        async with browser_manager.session_context(sid, cookies, ua, storage) as ctx:
-            with SessionLocal() as db:
-                db.execute(update(Job).where(Job.id == job_id).values(status="running", started_at=utcnow()))
-                db.commit()
-            result = await el.generate_tts(
-                ctx,
-                text=text,
-                voice=voice,
-                voice_id=voice_id,
-                model_id=model_id,
-                voice_settings=voice_settings,
-                out_base=settings.download_dir / job_id,
-                debug_png=settings.debug_dir / f"{job_id}.png",
+    if not ids:
+        _finish(job_id, status="failed", error_code="insufficient_credit",
+                error="insufficient credit: tidak ada session yang bisa dipakai")
+        return
+
+    last_error: str | None = None
+    only_credit = True  # semua kegagalan sejauh ini karena credit habis
+    for sid in ids:
+        with SessionLocal() as db:
+            sess = db.get(BrowserSession, sid)
+            if not sess:
+                continue
+            cookies, ua, storage = sess.cookies, sess.user_agent, sess.storage
+        try:
+            async with browser_manager.session_context(sid, cookies, ua, storage) as ctx:
+                with SessionLocal() as db:
+                    db.execute(
+                        update(Job).where(Job.id == job_id)
+                        .values(status="running", started_at=utcnow(), session_id=sid)
+                    )
+                    db.commit()
+                result = await el.generate_tts(
+                    ctx,
+                    text=text,
+                    voice=voice,
+                    voice_id=voice_id,
+                    model_id=model_id,
+                    voice_settings=voice_settings,
+                    out_base=settings.download_dir / job_id,
+                    debug_png=settings.debug_dir / f"{job_id}.png",
+                )
+            _finish(
+                job_id,
+                status="done",
+                file_path=str(result["path"]),
+                voice_id=result["voice_id"] or voice_id,
+                source=result["source"],
+                error=None,
+                error_code=None,
             )
-        _finish(
-            job_id,
-            status="done",
-            file_path=str(result["path"]),
-            voice_id=result["voice_id"] or voice_id,
-            source=result["source"],
-        )
-    except el.NotLoggedIn:
-        mark_status(sid, "expired")
-        _finish(
-            job_id,
-            status="failed",
-            error="session expired / belum login; kirim ulang 'storage' lewat PUT /sessions/{id}/login",
-        )
-    except Exception as e:
-        log.exception("job %s gagal", job_id)
-        _finish(job_id, status="failed", error=f"{type(e).__name__}: {e}"[:2000])
+            return
+        except el.InsufficientCredit as e:
+            new_default = mark_exhausted(sid)
+            log.warning("session %s credit habis (%s); default baru: %s", sid, str(e)[:100], new_default)
+            last_error = f"session {sid}: credit habis"
+        except el.NotLoggedIn:
+            mark_status(sid, "expired")
+            only_credit = False
+            last_error = f"session {sid} expired / belum login; kirim ulang lewat PUT /sessions/{{id}}/login"
+            if pinned:
+                break
+        except Exception as e:
+            log.exception("job %s gagal di session %s", job_id, sid)
+            _finish(job_id, status="failed", error=f"{type(e).__name__}: {e}"[:2000])
+            return
+
+    if only_credit:
+        _finish(job_id, status="failed", error_code="insufficient_credit",
+                error="insufficient credit: credit semua session sudah habis")
+    else:
+        _finish(job_id, status="failed", error=last_error)

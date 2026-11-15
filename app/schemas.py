@@ -125,6 +125,7 @@ class JobOut(BaseModel):
     source: str | None
     status: str
     error: str | None
+    error_code: str | None = None
     created_at: datetime
     started_at: datetime | None
     finished_at: datetime | None

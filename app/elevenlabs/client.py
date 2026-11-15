@@ -22,6 +22,29 @@ class SelectorNotConfigured(Exception):
     pass
 
 
+class InsufficientCredit(Exception):
+    """Credit akun ini habis (ditolak ElevenLabs karena kuota)."""
+
+
+_QUOTA_MARKERS = (
+    "quota_exceeded", "exceeds your quota", "insufficient_credit", "insufficient credit",
+    "not enough credit", "out of credit", "credits remaining", "credit limit",
+    "insufficient_quota", "character limit",
+)
+
+
+def _is_quota_error(status: int, body: bytes | str) -> bool:
+    """Deteksi penolakan karena credit habis (HTTP 402, atau pesan kuota di body 4xx)."""
+    if status == 402:
+        return True
+    if status < 400 or status >= 500:
+        return False
+    if isinstance(body, bytes):
+        body = body[:2000].decode("utf-8", "ignore")
+    low = body.lower()
+    return any(m in low for m in _QUOTA_MARKERS)
+
+
 class VoiceNotFound(Exception):
     def __str__(self) -> str:
         return f"voice tidak ditemukan: {self.args[0] if self.args else ''}"
@@ -178,6 +201,11 @@ async def _api_request(
             log.warning("api %s %s gagal", method, path, exc_info=True)
             return None
         if resp.status in (401, 403) and attempt == 0:
+            try:
+                if _is_quota_error(resp.status, await resp.body()):
+                    return resp  # bukan masalah auth: jangan ambil ulang token
+            except Exception:
+                pass
             log.info("api %s %s -> HTTP %s, ambil ulang auth", method, path, resp.status)
             continue
         return resp
@@ -471,6 +499,8 @@ async def _generate_via_api(
     if resp is None:
         return None
     data = await resp.body()
+    if not resp.ok and _is_quota_error(resp.status, data):
+        raise InsufficientCredit(data[:300].decode("utf-8", "ignore"))
     if not resp.ok or not _is_audio(data):
         log.warning("generate via api -> HTTP %s, %d bytes: %r", resp.status, len(data), data[:200])
         return None
@@ -507,7 +537,7 @@ async def generate_tts(
         await _open_app(page, S.TTS_URL, page.locator(_sel("TEXT_BLOCK")), "editor text-to-speech")
         path = await _generate_via_ui(page, text, voice, out_base)
         return {"path": path, "voice_id": vid, "source": "dom"}
-    except (NotLoggedIn, SelectorNotConfigured):
+    except (NotLoggedIn, SelectorNotConfigured, InsufficientCredit):
         raise
     except Exception:
         # screenshot untuk debugging selector
@@ -562,7 +592,11 @@ async def _generate_via_ui(page: Page, text: str, voice: str, out_base: Path) ->
         audio = await resp.body()  # menunggu stream selesai
         if resp.ok and _is_audio(audio):
             return _save_audio(audio, out_base)
+        if _is_quota_error(resp.status, audio):
+            raise InsufficientCredit(audio[:300].decode("utf-8", "ignore"))
         log.warning("response stream bukan audio (HTTP %s), coba tombol Download", resp.status)
+    except InsufficientCredit:
+        raise
     except PWTimeout:
         log.warning("response stream tidak tertangkap, coba tombol Download")
     except Exception:

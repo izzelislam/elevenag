@@ -9,9 +9,9 @@ from sqlalchemy.orm import Session
 from .. import jobs, webhooks
 from ..config import settings
 from ..db import get_db
-from ..models import Job
+from ..models import BrowserSession, Job
 from ..schemas import JobOut, TTSRequest
-from ..services import resolve_session
+from ..services import InsufficientCreditError, resolve_session, usable_sessions
 
 router = APIRouter(tags=["tts"])
 
@@ -26,6 +26,7 @@ def job_out(j: Job) -> JobOut:
         source=j.source,
         status=j.status,
         error=j.error,
+        error_code=j.error_code,
         created_at=j.created_at,
         started_at=j.started_at,
         finished_at=j.finished_at,
@@ -40,7 +41,18 @@ def job_out(j: Job) -> JobOut:
 @router.post("/tts", response_model=JobOut, status_code=202)
 async def create_tts(body: TTSRequest, db: Session = Depends(get_db)):
     """Buat voice over. Proses jalan di background; cek GET /jobs/{id}."""
-    s = resolve_session(db, body.session_id)
+    if body.session_id is not None:
+        s = resolve_session(db, body.session_id)
+        if s.status == "exhausted":
+            raise InsufficientCreditError(f"credit session {s.id} habis")
+    else:
+        usable = usable_sessions(db)
+        if not usable:
+            if db.scalar(select(BrowserSession.id).where(BrowserSession.status == "exhausted").limit(1)):
+                raise InsufficientCreditError("credit semua session sudah habis")
+            s = resolve_session(db, None)  # 400 / session expired ditangani seperti biasa
+        else:
+            s = usable[0]
     voice_settings = {
         "stability": body.stability if body.stability is not None else settings.default_stability,
         "similarity": body.similarity if body.similarity is not None else settings.default_similarity,
@@ -51,6 +63,7 @@ async def create_tts(body: TTSRequest, db: Session = Depends(get_db)):
         voice, voice_id = settings.default_voice_name, settings.default_voice_id
     job = Job(
         session_id=s.id,
+        session_pinned=body.session_id is not None,
         voice=voice or voice_id,
         voice_id=voice_id,
         model_id=body.model_id or settings.default_model_id,

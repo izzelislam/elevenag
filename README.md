@@ -82,6 +82,21 @@ curl -H "X-API-Key: $KEY" -OJ localhost:8000/jobs/<job_id>/download
 
 Cookie terbaru otomatis disimpan ulang setelah tiap aksi, jadi session lebih awet.
 
+## Auto-switch saat credit habis
+
+Kalau `POST /tts` tanpa `session_id`, job dicoba di session default. Bila ElevenLabs menolak karena
+credit habis, session itu ditandai `exhausted`, **default otomatis pindah** ke session berikutnya
+yang masih usable, dan job diulang di sana. Kalau semua session habis:
+
+- `POST /tts` langsung membalas **402** `{"detail": {"code": "insufficient_credit", ...}}`
+- job yang sedang jalan berakhir `failed` dengan `error_code: "insufficient_credit"` (juga ada di webhook)
+
+Session `exhausted` aktif lagi otomatis setelah `credits_reset_at`, atau manual lewat
+`POST /sessions/{id}/reactivate` (mis. setelah top-up). Kalau client memilih `session_id` sendiri,
+tidak ada pindah session (langsung 402 bila habis). Session `expired` dilewati saat memilih berikutnya.
+Deteksi credit habis berdasarkan HTTP 402 / teks kuota di respons ElevenLabs; `GET /credits` yang
+menunjukkan sisa 0 juga menandai habis.
+
 ## Webhook
 
 Saat job selesai atau gagal, API mengirim `POST` ke `webhook_url`, yang diisi per request di `POST /tts` atau lewat `WEBHOOK_URL` di `.env`.

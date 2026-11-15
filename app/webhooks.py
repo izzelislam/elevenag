@@ -52,6 +52,7 @@ def build_payload(job: Job) -> dict:
             "model_id": job.model_id,
             "source": job.source,
             "error": job.error,
+            "error_code": job.error_code,
             "text_length": len(job.text or ""),
             "created_at": job.created_at.isoformat() + "Z" if job.created_at else None,
             "started_at": job.started_at.isoformat() + "Z" if job.started_at else None,

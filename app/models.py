@@ -27,7 +27,7 @@ class BrowserSession(Base):
     storage_json: Mapped[str | None] = mapped_column(LongText, nullable=True)
     user_agent: Mapped[str | None] = mapped_column(String(500), nullable=True)
     is_default: Mapped[bool] = mapped_column(Boolean, default=False)
-    # unknown | ok | expired
+    # unknown | ok | expired | exhausted (credit habis; aktif lagi otomatis setelah credits_reset_at)
     status: Mapped[str] = mapped_column(String(20), default="unknown")
 
     tier: Mapped[str | None] = mapped_column(String(50), nullable=True)
@@ -79,6 +79,10 @@ class Job(Base):
     status: Mapped[str] = mapped_column(String(20), default="queued", index=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     file_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    # kode error mesin-baca, mis. "insufficient_credit"
+    error_code: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    # True = client memilih session_id sendiri -> tidak boleh pindah session otomatis
+    session_pinned: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
 
     # webhook saat job selesai/gagal
     webhook_url: Mapped[str | None] = mapped_column(String(1000), nullable=True)

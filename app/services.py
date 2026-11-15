@@ -31,6 +31,62 @@ def session_out(s: BrowserSession) -> SessionOut:
     )
 
 
+class InsufficientCreditError(HTTPException):
+    def __init__(self, message: str):
+        super().__init__(
+            status.HTTP_402_PAYMENT_REQUIRED,
+            {"code": "insufficient_credit", "message": message},
+        )
+
+
+def reactivate_due(db: Session) -> None:
+    """Session 'exhausted' yang sudah lewat credits_reset_at dianggap punya credit lagi."""
+    db.execute(
+        update(BrowserSession)
+        .where(
+            BrowserSession.status == "exhausted",
+            BrowserSession.credits_reset_at.is_not(None),
+            BrowserSession.credits_reset_at <= utcnow(),
+        )
+        .values(status="unknown")
+    )
+    db.commit()
+
+
+def usable_sessions(db: Session) -> list[BrowserSession]:
+    """Session yang masih boleh dipakai (bukan expired/exhausted); default di urutan pertama."""
+    reactivate_due(db)
+    rows = db.scalars(
+        select(BrowserSession)
+        .where(BrowserSession.status.in_(["unknown", "ok"]))
+        .order_by(BrowserSession.is_default.desc(), BrowserSession.id)
+    ).all()
+    return list(rows)
+
+
+def mark_exhausted(session_id: int) -> int | None:
+    """Tandai credit session habis. Kalau session ini default, default pindah ke session
+    berikutnya yang masih usable. Return id default yang baru (atau None kalau tidak berubah)."""
+    with SessionLocal() as db:
+        s = db.get(BrowserSession, session_id)
+        if not s:
+            return None
+        s.status = "exhausted"
+        if s.credits_limit is not None:
+            s.credits_used = s.credits_limit
+        s.last_checked_at = utcnow()
+        was_default = s.is_default
+        db.commit()
+        if not was_default:
+            return None
+        nxt = next((u for u in usable_sessions(db) if u.id != session_id), None)
+        if not nxt:
+            return None
+        set_default(db, nxt.id)
+        db.commit()
+        return nxt.id
+
+
 def resolve_session(db: Session, session_id: int | None) -> BrowserSession:
     """Pakai session_id kalau dikirim, kalau tidak pakai session default."""
     if session_id is not None:
@@ -88,7 +144,7 @@ def save_credits(session_id: int, sub: dict) -> None:
         s = db.get(BrowserSession, session_id)
         if not s:
             return
-        s.status = "ok"
+        s.status = "exhausted" if sub.get("remaining") is not None and sub["remaining"] <= 0 else "ok"
         s.tier = sub.get("tier")
         s.credits_used = sub.get("used")
         s.credits_limit = sub.get("limit")
@@ -97,4 +153,7 @@ def save_credits(session_id: int, sub: dict) -> None:
             datetime.fromtimestamp(reset, timezone.utc).replace(tzinfo=None) if reset else None
         )
         s.last_checked_at = utcnow()
+        exhausted = s.status == "exhausted"
         db.commit()
+    if exhausted:
+        mark_exhausted(session_id)  # kalau ini default, default pindah ke session lain

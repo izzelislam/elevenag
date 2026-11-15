@@ -133,6 +133,16 @@ def make_default(session_id: int, db: Session = Depends(get_db)):
     return session_out(s)
 
 
+@router.post("/{session_id}/reactivate", response_model=SessionOut)
+def reactivate(session_id: int, db: Session = Depends(get_db)):
+    """Tandai session yang credit-nya habis/expired boleh dipakai lagi (mis. setelah top-up)."""
+    s = _get(db, session_id)
+    s.status = "unknown"
+    db.commit()
+    db.refresh(s)
+    return session_out(s)
+
+
 @router.delete("/{session_id}", status_code=204)
 async def delete_session(session_id: int, db: Session = Depends(get_db)):
     db.delete(_get(db, session_id))
