@@ -1,0 +1,18 @@
+services:
+  api:
+    build: .
+    # Port & alamat bind diatur di .env (APP_PORT, APP_BIND). Di dalam container tetap 8000.
+    ports:
+      - "${APP_BIND:-127.0.0.1}:${APP_PORT:-8000}:8000"
+    env_file: .env
+    environment:
+      DATA_DIR: /data
+      # SQLite: file DB ada di mesin host (folder ./data di-mount)
+      DATABASE_URL: sqlite:////data/app.db
+      HEADLESS: "true"
+    volumes:
+      - ./data:/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    shm_size: "1gb"
+    restart: unless-stopped
